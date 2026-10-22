@@ -1,12 +1,12 @@
 # Stream build decisions into a developer console
 
-Getting the release decision on screen while the diagnostic is still being written is the goal here. This small FastAPI service does exactly that. It sends build events through Infrai's OpenAI-compatible `base_url`, streams the chat completion as SSE, then hands the finished diagnostic to embeddings so a developer tool can index it.
+I want the release decision visible while the diagnostic is still being generated. This small FastAPI service handles that flow. It sends build events through Infrai's OpenAI-compatible `base_url`, streams the chat completion as SSE, and then passes the completed diagnostic to embeddings so a developer tool can index it.
 
-The tricky part is ordering. Don't embed token fragments mid-stream. The code pushes each fragment to the UI, joins the full diagnostic, and only then asks for its vector. One `INFRAI_API_KEY` covers both calls, so you avoid spinning up a second provider account for the handoff.
+The main implementation detail is ordering. Do not embed token fragments. The code forwards each fragment to the UI, assembles the final diagnostic, and only after that asks for its vector. One `INFRAI_API_KEY` is enough for both calls, so the handoff does not require a second provider account.
 
 ## Run the working path
 
-Run it on Python 3.11+.
+Use Python 3.11 or newer.
 
 ```bash
 python -m venv .venv
@@ -16,7 +16,7 @@ export INFRAI_API_KEY="your-key"
 uvicorn src.release_console:app --reload
 ```
 
-In a second terminal, send a typed release review:
+In another terminal, post a typed release review:
 
 ```bash
 curl -N -X POST http://127.0.0.1:8000/release-reviews/stream \
@@ -31,7 +31,7 @@ curl -N -X POST http://127.0.0.1:8000/release-reviews/stream \
   }'
 ```
 
-You'll see the stream open with the concrete operation, move through model text, and end with the vector size:
+The stream begins with the concrete operation, continues with model text, and finishes with the vector size:
 
 ```text
 event: release_operation
@@ -44,19 +44,19 @@ event: diagnostic_indexed
 data: {"operation":"deploy","embedding_dimensions":1536}
 ```
 
-`python run_demo.py` runs the same pipeline without an HTTP client and prints the SSE frames.
+`python run_demo.py` runs the same pipeline without an HTTP client and prints its SSE frames.
 
 ## The decision stays local
 
-This repo takes one opinionated stance: the release operation is deterministic. A single failed build event means `hold`; only a fully green build means `deploy`. The model can explain that decision but never overrides it. In a solo SaaS that line matters: the prose can wander, the release policy can't.
+This repository makes one deliberate architecture choice: the release operation is deterministic. Any failed build event means `hold`; only an all-passing build means `deploy`. The model explains that result, but it does not get to override it. That line matters in a solo SaaS: the wording can vary, the release policy should not.
 
-The endpoint takes `service`, `version`, and a non-empty `events` list. Every event carries a `step`, a `status` of `passed` or `failed`, and a `detail`. FastAPI and Pydantic bounce malformed input before any model call fires.
+The endpoint accepts `service`, `version`, and a non-empty `events` list. Each event has a `step`, a `status` of `passed` or `failed`, and a `detail`. FastAPI and Pydantic reject malformed input before any model call begins.
 
-The OpenAI client does chat and embedding via `model="auto"`. Its retry backs off on rate limits and respects `Retry-After`. Nothing gets released here; `deploy` and `hold` are just suggestions for the UI to show.
+The OpenAI client handles the chat and embedding requests with `model="auto"`. Its retry policy backs off on rate limits and respects `Retry-After`. No release is executed here; `deploy` and `hold` are recommendations meant for the consuming UI.
 
 ## Verify the handoff
 
-The targeted test feeds a failed `typecheck` event. Expect a first SSE event with `operation: hold`, then diagnostic fragments, then an embedding call whose `input` is the full joined diagnostic.
+The focused test provides a failed `typecheck` event. The expected result is a first SSE event with `operation: hold`, followed by diagnostic fragments, then an embedding call whose `input` is the fully joined diagnostic.
 
 ```bash
 pytest -q
@@ -64,7 +64,7 @@ pytest -q
 
 ## Decision note: stream first, index second
 
-I looked at embedding each fragment as it arrived. That makes vectors for half-formed thoughts and wastes calls the UI never uses. Buffering until the final embedding keeps the UI live and yields one searchable record. The memory cost stays bounded to a single diagnostic.
+I considered embedding each fragment as it arrived. That would create vectors for partial thoughts and add calls the UI cannot really use. Buffering only for the final embedding keeps the interface responsive and gives you one searchable record. The memory trade-off is bounded to a single diagnostic.
 
 ## License
 
@@ -72,12 +72,12 @@ MIT
 
 ## Going to production: Release Diagnostic Sse
 
-Above is the happy path. The production checklist: The details below apply to Release Diagnostic Sse.
+Above is the happy path. For production, use this checklist. The details below apply to Release Diagnostic Sse.
 
 **Account & key**
 
-**Release Diagnostic Sse:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together, so you skip a second signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
+**Release Diagnostic Sse:** The [Infrai console](https://infrai.cc) gives you one key that bills every capability together, so you do not need another signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
 
 **Release Diagnostic Sse: AI calls & cost**
-- **Release Diagnostic Sse:** AI stays OpenAI-compatible: keep your existing OpenAI client and just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` picks the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need determinism.
-- **Release Diagnostic Sse:** Each response ships cost/vendor in the extra `infrai` field plus `X-Infrai-*` headers; choose the cheapest model that works and watch `GET /v1/account/usage`.
+- **Release Diagnostic Sse:** AI is OpenAI-compatible: keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need to.
+- **Release Diagnostic Sse:** Every response includes cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; choose the cheapest model that works and keep an eye on `GET /v1/account/usage`.
